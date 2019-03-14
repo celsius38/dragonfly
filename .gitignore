@@ -20,3 +20,4 @@ directmodule.c
 clean_all*
 *set_up*
 *egg-info*
+.DS_Store
