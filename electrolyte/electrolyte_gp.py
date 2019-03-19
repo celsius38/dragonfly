@@ -15,12 +15,12 @@ class ElectrolyteGPFitter(gp_core.GPFitter):
     def __init__(self, X, Y, options=None, reporter=None):
         self.dim = 10
         reporter = get_reporter(reporter)
+        print("[{}]options: {}".format(__file__, options))
         if options is None:
             options = load_options(electrolyte_gp_args, "ElectrolyteGPFitter", reporter=reporter)
         super(ElectrolyteGPFitter, self).__init__(X, Y, options, reporter)
 
     def _child_set_up(self):
-        print("[{}] options: {}".format(__file__, options))
         if self.options.kernel_type == "default":
             #self.kernel_type = _DFLT_KERNEL_TYPE
             self.options.kernel_type = _DFLT_KERNEL_TYPE
