@@ -29,4 +29,3 @@ def electrolyte_synthetic_function(x):
 def objective(x):
   """ Compute objective. """
   return electrolyte_synthetic_function(x)
-
