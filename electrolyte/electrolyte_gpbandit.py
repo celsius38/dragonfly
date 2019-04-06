@@ -1,11 +1,14 @@
 import numpy as np
 from argparse import Namespace
 from dragonfly.opt import gpb_acquisitions
-from dragonfly.opt.gp_bandit import GPBandit, get_all_gp_bandit_args, get_default_acquisition_for_domain
+from dragonfly.opt.gp_bandit import GPBandit, get_all_gp_bandit_args
 from dragonfly.utils.reporters import get_reporter
 from dragonfly.utils.option_handler import load_options
+from dragonfly.exd.exd_utils import get_euclidean_initial_qinfos
 from electrolyte_gp import ElectrolyteGP, ElectrolyteGPFitter, electrolyte_gp_args
 
+# Electrolyte GPBandit Class
+# ================================================================
 class Electrolyte_GPBandit(GPBandit):
   def __init__(self, func_caller, worker_manager, is_mf=False,
                domain_dist_computers=None, options=None, reporter=None):
@@ -20,14 +23,12 @@ class Electrolyte_GPBandit(GPBandit):
     super(Electrolyte_GPBandit, self).__init__(func_caller, worker_manager, is_mf=is_mf,
                                                options=options, reporter=reporter)
   def _set_up_for_acquisition(self):
-    """ Set up for acquisition, remove add_ucb from the list """
+    """ Set up for acquisition """
     if self.options.acq == 'default':
-      acq = get_default_acquisition_for_domain(self.domain)
+      acq = "ei-ucb-ttei-ts" # use '-' separated list of options
     else:
       acq = self.options.acq
     self.acqs_to_use = [elem.lower() for elem in acq.split('-')]
-    # add_ucb not for this gp
-    if "add_ucb" in self.acqs_to_use: self.acqs_to_use.remove("add_ucb")
     self.acqs_to_use_counter = {key: 0 for key in self.acqs_to_use}
     if self.options.acq_probs == 'uniform':
       self.acq_probs = np.ones(len(self.acqs_to_use)) / float(len(self.acqs_to_use))
@@ -37,6 +38,7 @@ class Electrolyte_GPBandit(GPBandit):
       self.acq_probs = self._get_adaptive_ensemble_acq_probs()
     else:
       self.acq_probs = np.array([float(x) for x in self.options.acq_probs.split('-')])
+    # normalize to have prob summed up to 1
     self.acq_probs = self.acq_probs / self.acq_probs.sum()
     assert len(self.acq_probs) == len(self.acqs_to_use)
 
@@ -52,21 +54,6 @@ class Electrolyte_GPBandit(GPBandit):
     return ElectrolyteGPFitter(reg_data[0], reg_data[1],
                                options=options, reporter=self.reporter)
   
-  def _domain_specific_build_new_gp(self, reg_data):
-    """ Build an additive GP if required"""
-    pass
-  
-  def _child_add_data_to_gp(self, new_data):
-    """ Adds data from the child class for additive GP"""
-    pass
-  
-  def _child_opt_method_update_history(self, qinfo):
-    """ Update history for ElectrolyteGP bandit specific statistics. """
-    pass
-
-  def _domain_specific_set_next_gp(self):
-    pass
-  
   def _determine_next_query(self):
     """ Determine next point for evaluation"""
     curr_acq = self._get_next_acq()
@@ -78,17 +65,57 @@ class Electrolyte_GPBandit(GPBandit):
     qinfo.point = next_eval_point
     return qinfo
 
-  def _determine_next_batch_of_queries(self, batch_size): 
+  def _determine_next_batch_of_queries(self, batch_size):
     curr_acq = self._get_next_acq()
     anc_data = self._get_ancillary_data_for_acquisition(curr_acq)
     select_pt_func = getattr(gpb_acquisitions.syn, curr_acq)
     qinfo_hp_tune_method = self.gp_processor.hp_tune_method
     next_batch_of_eval_points = select_pt_func(batch_size, self.add_gp, anc_data)
-    # TODO: why don't we assign curr_acq to the qinfos in this case?
-    qinfos = [Namespace(point=pt, hp_tune_method=qinfo_hp_tune_method)
-              for pt in next_batch_of_eval_points]
+    qinfos = [Namespace(point=pt,
+                        hp_tune_method=qinfo_hp_tune_method,
+                        curr_acq=curr_acq) for pt in next_batch_of_eval_points]
     return qinfos
+  
+  def _get_initial_qinfos(self, num_init_evals):
+    return get_euclidean_initial_qinfos(self.options.init_method,
+                                        num_init_evals,
+                                        self.domain.bounds)
+    
+  def _domain_specific_acq_opt_set_up(self):
+    """ Set up acquisition optimisation for the child class. """
+    if self.acq_opt_method.lower() in ['direct']:
+      self._set_up_euc_acq_opt_direct()
+    elif self.acq_opt_method.lower() in ['pdoo']:
+      self._set_up_euc_acq_opt_pdoo()
+    elif self.acq_opt_method.lower() == 'rand':
+      self._set_up_euc_acq_opt_rand()
+    else:
+      raise NotImplementedError('Not implemented acquisition optimisation for %s yet.'%( \
+                                self.acq_opt_method))
 
+  # Any of these set up methods can be overridden by a child class -------------------
+  def _set_up_euc_acq_opt_direct(self):
+    """ Sets up optimisation for acquisition using direct/pdoo. """
+    if self.get_acq_opt_max_evals is None:
+      lead_const = 1 * min(5, self.domain.get_dim())**2
+      self.get_acq_opt_max_evals = lambda t: np.clip(lead_const * np.sqrt(min(t, 1000)),
+                                                     1000, 3e4)
+
+  def _set_up_euc_acq_opt_pdoo(self):
+    """ Sets up optimisation for acquisition using direct/pdoo. """
+    if self.get_acq_opt_max_evals is None:
+      lead_const = 2 * min(5, self.domain.get_dim())**2
+      self.get_acq_opt_max_evals = lambda t: np.clip(lead_const * np.sqrt(min(t, 1000)),
+                                                     2000, 6e4)
+
+  def _set_up_euc_acq_opt_rand(self):
+    """ Sets up optimisation for acquisition using random search. """
+    if self.get_acq_opt_max_evals is None:
+      lead_const = 10 * min(5, self.domain.get_dim())**2
+      self.get_acq_opt_max_evals = lambda t: np.clip(lead_const * np.sqrt(min(t, 1000)),
+                                                     2000, 3e4)
+
+# Electrolyte GP ends ======================================================
 def get_all_electrolyte_gp_bandit_args(additional_args=None):
   if additional_args is None:
     additional_args = []
